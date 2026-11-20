@@ -1,17 +1,17 @@
 // ===== CONFIG =====
   const MOEDAS = [
     { code: 'BRL', nome: 'Real', bandeira: '🇧🇷', base: true },
-    { code: 'USD', nome: 'Dólar', bandeira: '🇺🇸', par: 'USDBRL' },
-    { code: 'EUR', nome: 'Euro', bandeira: '🇪🇺', par: 'EURBRL' },
-    { code: 'GBP', nome: 'Libra', bandeira: '🇬🇧', par: 'GBPBRL' },
-    { code: 'BTC', nome: 'Bitcoin', bandeira: '₿', par: 'BTCBRL' },
-    { code: 'ETH', nome: 'Ethereum', bandeira: 'Ξ', par: 'ETHBRL' },
-    { code: 'ARS', nome: 'Peso Arg.', bandeira: '🇦🇷', par: 'ARSBRL' },
-    { code: 'JPY', nome: 'Iene', bandeira: '🇯🇵', par: 'JPYBRL' },
-    { code: 'CNY', nome: 'Yuan', bandeira: '🇨🇳', par: 'CNYBRL' },
+    { code: 'USD', nome: 'Dólar', bandeira: '🇺🇸', par: 'USD-BRL' },
+    { code: 'EUR', nome: 'Euro', bandeira: '🇪🇺', par: 'EUR-BRL' },
+    { code: 'GBP', nome: 'Libra', bandeira: '🇬🇧', par: 'GBP-BRL' },
+    { code: 'BTC', nome: 'Bitcoin', bandeira: '₿', par: 'BTC-BRL' },
+    { code: 'ETH', nome: 'Ethereum', bandeira: 'Ξ', par: 'ETH-BRL' },
+    { code: 'ARS', nome: 'Peso Arg.', bandeira: '🇦🇷', par: 'ARS-BRL' },
+    { code: 'JPY', nome: 'Iene', bandeira: '🇯🇵', par: 'JPY-BRL' },
+    { code: 'CNY', nome: 'Yuan', bandeira: '🇨🇳', par: 'CNY-BRL' },
   ];
 
-  const API_URL = 'https://economia.awesomeapi.com.br/last/' +
+  const API_URL = 'https://economia.awesomeapi.com.br/json/last/' +
     MOEDAS.filter(m => m.par).map(m => m.par).join(',');
 
   // ===== DOM =====
@@ -22,6 +22,22 @@
   const errorEl = $('error');
   const refreshBtn = $('refresh-btn');
   const toastContainer = $('toast-container');
+
+  // ===== CACHE LOCAL =====
+  function salvarCache(dados) {
+    try {
+      localStorage.setItem('cambio-dados', JSON.stringify({ dados, quando: Date.now() }));
+    } catch (e) {}
+  }
+
+  function lerCache() {
+    try {
+      const raw = localStorage.getItem('cambio-dados');
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
 
   // ===== UTILS =====
   function formatar(num) {
@@ -57,9 +73,7 @@
 
   // ===== RENDER =====
   function renderCards(dados) {
-    console.log('Renderizando cards com dados:', dados);
-
-    cardsEl.innerHTML = MOEDAS.map((m, i) => {
+    cardsEl.innerHTML = MOEDAS.map((m) => {
       const isBase = m.base;
       let valor = null;
       let change = 0;
@@ -67,11 +81,13 @@
 
       if (isBase) {
         valor = 1;
-      } else if (dados && dados[m.par] && dados[m.par].bid) {
-        valor = parseFloat(dados[m.par].bid);
+      } else if (dados) {
+        const key = m.par.replace('-', ''); // USDBRL, EURBRL...
+        if (dados[key] && dados[key].bid) {
+          valor = parseFloat(dados[key].bid);
+        }
       }
 
-      // Calcular variação (simples — compara com anterior se tiver)
       if (!isBase && valor !== null && window.__ultimasCotacoes && window.__ultimasCotacoes[m.par]) {
         const anterior = window.__ultimasCotacoes[m.par];
         change = ((valor - anterior) / anterior) * 100;
@@ -100,19 +116,19 @@
         </div>
       `;
     }).join('');
-
-    // Salvar para próxima comparação
-    if (dados) {
-      window.__ultimasCotacoes = {};
-      MOEDAS.filter(m => m.par && dados[m.par] && dados[m.par].bid).forEach(m => {
-        window.__ultimasCotacoes[m.par] = parseFloat(dados[m.par].bid);
-      });
-    }
   }
 
   // ===== CARREGAR =====
-  async function carregar() {
-    console.log('Iniciando carregar...');
+  let ultimaChamada = 0;
+
+  async function carregar(manual = false) {
+    const agora = Date.now();
+    if (manual && agora - ultimaChamada < 10000) {
+      toast('Aguarde alguns segundos antes de atualizar de novo');
+      return;
+    }
+    ultimaChamada = agora;
+
     mostrarLoader();
     errorEl.style.display = 'none';
 
@@ -121,6 +137,9 @@
       const resp = await fetch(API_URL, { cache: 'no-store' });
       console.log('Status HTTP:', resp.status);
 
+      if (resp.status === 429) {
+        throw new Error('Limite de requisições da API atingido. Aguarde 1 minuto.');
+      }
       if (!resp.ok) {
         throw new Error('HTTP ' + resp.status);
       }
@@ -128,27 +147,39 @@
       const dados = await resp.json();
       console.log('Dados recebidos:', dados);
 
-      // Validar que temos dados
-      const temDados = MOEDAS.filter(m => m.par).some(m => dados[m.par]);
+      const temDados = MOEDAS.filter(m => m.par).some(m => dados[m.par.replace('-', '')]);
       if (!temDados) {
         throw new Error('API não retornou dados válidos');
       }
 
       renderCards(dados);
+      salvarCache(dados);
 
-      const agora = new Date();
-      statusEl.textContent = 'Atualizado às ' + agora.toLocaleTimeString('pt-BR');
+      window.__ultimasCotacoes = {};
+      MOEDAS.filter(m => m.par && dados[m.par.replace('-', '')] && dados[m.par.replace('-', '')].bid).forEach(m => {
+        window.__ultimasCotacoes[m.par] = parseFloat(dados[m.par.replace('-', '')].bid);
+      });
+
+      statusEl.textContent = 'Atualizado às ' + new Date().toLocaleTimeString('pt-BR');
       toast('Cotações atualizadas!', 'success');
 
     } catch (erro) {
       console.error('Erro ao carregar:', erro);
-      errorEl.textContent = '⚠️ ' + erro.message + '. Verifique sua conexão e tente novamente.';
-      errorEl.style.display = 'block';
-      toast('Falha ao buscar cotações', 'error');
-      // Mostrar cards com "—" se já tiver dados anteriores
-      if (!cardsEl.innerHTML || cardsEl.innerHTML.trim() === '') {
-        renderCards(null);
+
+      const cache = lerCache();
+      if (cache && cache.dados) {
+        renderCards(cache.dados);
+        const quando = new Date(cache.quando).toLocaleTimeString('pt-BR');
+        statusEl.textContent = 'Sem conexão — mostrando dados de ' + quando;
+        errorEl.textContent = '⚠️ ' + erro.message;
+        errorEl.style.display = 'block';
+      } else {
+        if (!cardsEl.innerHTML.trim()) renderCards(null);
+        errorEl.textContent = '⚠️ ' + erro.message + ' — verifique sua conexão.';
+        errorEl.style.display = 'block';
       }
+      toast('Falha ao buscar cotações', 'error');
+
     } finally {
       esconderLoader();
     }
@@ -156,14 +187,16 @@
 
   // ===== INIT =====
   window.addEventListener('load', () => {
-    console.log('Página carregada');
-    // Renderizar cards vazios imediatamente
-    renderCards(null);
-    // Buscar dados
-    carregar();
+    const cache = lerCache();
+    if (cache && cache.dados) {
+      renderCards(cache.dados);
+    } else {
+      renderCards(null);
+    }
 
-    // Auto-refresh a cada 5 min
+    carregar(false);
+
     setInterval(() => {
-      if (!document.hidden) carregar();
+      if (!document.hidden) carregar(false);
     }, 5 * 60 * 1000);
   });
